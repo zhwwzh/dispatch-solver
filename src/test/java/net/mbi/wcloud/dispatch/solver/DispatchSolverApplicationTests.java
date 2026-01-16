@@ -1,4 +1,4 @@
-package net.mbi.wcloud.dispatch_solver;
+package net.mbi.wcloud.dispatch.solver;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
