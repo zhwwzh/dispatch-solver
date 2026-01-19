@@ -19,7 +19,7 @@ public class DispatchPlanDO {
     private Long tenantId;
     private String planCode;
 
-    private String status; // CREATED/RUNNING/SOLVED/FAILED
+    private String status;
     private String message;
 
     private Integer timeLimitSec;
@@ -37,7 +37,6 @@ public class DispatchPlanDO {
     private String updater;
     private LocalDateTime updateTime;
 
-    /** 逻辑删除：0-未删除，1-已删除 */
     @TableLogic
     @TableField("deleted")
     private Integer deleted;

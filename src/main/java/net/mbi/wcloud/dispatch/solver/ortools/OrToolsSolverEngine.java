@@ -7,6 +7,7 @@ import net.mbi.wcloud.dispatch.solver.service.plan.dto.SolveRequestDTO;
 import net.mbi.wcloud.dispatch.solver.service.plan.model.MatrixData;
 import net.mbi.wcloud.dispatch.solver.service.plan.model.SolveInput;
 import net.mbi.wcloud.dispatch.solver.service.plan.model.SolveResult;
+import net.mbi.wcloud.dispatch.solver.service.plan.model.SolveTaskStatus;
 import net.mbi.wcloud.dispatch.solver.service.plan.model.TaskNode;
 import net.mbi.wcloud.dispatch.solver.service.plan.model.VehicleResource;
 import org.springframework.stereotype.Component;
@@ -34,7 +35,7 @@ public class OrToolsSolverEngine {
                 req.getPlanId(), taskCount, vehicleCount, nodeCount, req.getOptions().getTimeLimitSeconds());
 
         if (taskCount == 0 || vehicleCount == 0) {
-            out.setStatus("FAILED");
+            out.setStatus(SolveTaskStatus.FAILED.code());
             out.setMessage("No tasks or vehicles");
             return out;
         }
@@ -129,7 +130,7 @@ public class OrToolsSolverEngine {
         long solveCost = System.currentTimeMillis() - t0;
 
         if (solution == null) {
-            out.setStatus("FAILED");
+            out.setStatus(SolveTaskStatus.FAILED.code());
             out.setMessage("No solution");
             for (TaskNode t : tasks) {
                 SolveResult.UnassignedResult u = new SolveResult.UnassignedResult();
@@ -144,7 +145,7 @@ public class OrToolsSolverEngine {
             return out;
         }
 
-        out.setStatus("SOLVED");
+        out.setStatus(SolveTaskStatus.SOLVED.code());
         out.setMessage("OK");
 
         Set<Long> assignedTaskIds = new HashSet<>();

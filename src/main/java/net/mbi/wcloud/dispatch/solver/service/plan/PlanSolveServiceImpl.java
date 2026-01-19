@@ -5,13 +5,14 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.mbi.wcloud.dispatch.solver.dal.dataobject.*;
 import net.mbi.wcloud.dispatch.solver.dal.mysql.*;
+import net.mbi.wcloud.dispatch.solver.service.plan.model.*;
 import net.mbi.wcloud.dispatch.solver.framework.lock.DistributedLock;
 import net.mbi.wcloud.dispatch.solver.service.plan.dto.SolveRequestDTO;
-import net.mbi.wcloud.dispatch.solver.service.plan.model.*;
 import net.mbi.wcloud.dispatch.solver.ortools.OrToolsSolverEngine;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -25,37 +26,82 @@ public class PlanSolveServiceImpl implements PlanSolveService {
     private final DispatchPlanMapper planMapper;
     private final DispatchTaskMapper taskMapper;
     private final DispatchVehicleMapper vehicleMapper;
-
     private final DispatchRouteMapper routeMapper;
     private final DispatchRouteStopMapper stopMapper;
     private final DispatchUnassignedMapper unassignedMapper;
-
+    private final DispatchSolveJobMapper solveJobMapper;
     private final OrToolsSolverEngine solverEngine;
 
     @Override
-    public void submitSolve(SolveRequestDTO req) {
-        String lockKey = "solve:" + req.getTenantId() + ":" + req.getPlanId();
+    public String submitSolve(SolveRequestDTO req) {
+        Long tenantId = req.getTenantId();
+        Long planId = req.getPlanId();
+        String lockKey = "solve:" + tenantId + ":" + planId;
 
-        log.info("SOLVE_SUBMIT tenantId={}, planId={}", req.getTenantId(), req.getPlanId());
+        log.info("SOLVE_SUBMIT tenantId={}, planId={}", tenantId, planId);
 
-        if (!distributedLock.tryLock(lockKey, 60)) {
-            log.warn("SOLVE_REJECT_LOCKED tenantId={}, planId={}", req.getTenantId(), req.getPlanId());
-            return;
+        // 1. 先查活跃任务（ACCEPTED/RUNNING）：幂等命中直接返回同一个 taskId
+        DispatchSolveJobDO active = findActiveJob(tenantId, planId);
+        if (active != null) {
+            log.info("SOLVE_IDEMPOTENT_HIT tenantId={}, planId={}, taskId={}, status={}",
+                    tenantId, planId, active.getTaskId(), active.getStatus());
+            return active.getTaskId();
         }
 
-        // mark RUNNING
-        markStatus(req.getTenantId(), req.getPlanId(), "RUNNING", "RUNNING");
+        // 2. 不存在活跃任务 -> 尝试加锁
+        if (!distributedLock.tryLock(lockKey, 60)) {
+            log.warn("SOLVE_LOCK_BUSY tenantId={}, planId={}", tenantId, planId);
 
-        runAsync(req);
+            // 3. 加锁失败，再查一次（防并发空窗）：如果别人刚创建了任务，这里能拿到同一个 taskId
+            active = findActiveJob(tenantId, planId);
+            if (active != null) {
+                log.info("SOLVE_IDEMPOTENT_AFTER_LOCK_FAIL tenantId={}, planId={}, taskId={}, status={}",
+                        tenantId, planId, active.getTaskId(), active.getStatus());
+                return active.getTaskId();
+            }
+
+            // 4. 极低概率：锁忙但又查不到活跃任务 -> 提示重试（也可按你项目异常体系抛 ServiceException）
+            throw new IllegalStateException("Solve submit busy, please retry");
+        }
+
+        // 5. 获取锁成功：创建新任务
+        String taskId = "solve-" + tenantId + "-" + planId + "-" + System.currentTimeMillis();
+        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+
+        DispatchSolveJobDO job = new DispatchSolveJobDO();
+        job.setTenantId(tenantId);
+        job.setPlanId(planId);
+        job.setTaskId(taskId);
+        job.setStatus(SolveTaskStatus.ACCEPTED.code());
+        job.setMessage(SolveTaskStatus.ACCEPTED.code());
+        job.setCreateTime(now);
+        job.setUpdateTime(now);
+        job.setDeleted(0);
+        solveJobMapper.insert(job);
+
+        markStatus(tenantId, planId,
+                SolveTaskStatus.ACCEPTED.code(),
+                SolveTaskStatus.ACCEPTED.code());
+
+        runAsync(req, taskId);
+
+        return taskId;
     }
 
     @Async("solveExecutor")
-    public void runAsync(SolveRequestDTO req) {
+    public void runAsync(SolveRequestDTO req, String taskId) {
         String lockKey = "solve:" + req.getTenantId() + ":" + req.getPlanId();
         long start = System.currentTimeMillis();
 
-        log.info("SOLVE_START tenantId={}, planId={}, timeLimit={}s",
-                req.getTenantId(), req.getPlanId(), req.getOptions().getTimeLimitSeconds());
+        log.info("SOLVE_START tenantId={}, planId={}, taskId={}, timeLimit={}s",
+                req.getTenantId(), req.getPlanId(), taskId, req.getOptions().getTimeLimitSeconds());
+
+        // ✅ 真正开始执行时：RUNNING
+        markStatus(req.getTenantId(), req.getPlanId(),
+                SolveTaskStatus.RUNNING.code(),
+                SolveTaskStatus.RUNNING.code());
+        updateJobStatus(req.getTenantId(), req.getPlanId(), taskId,
+                SolveTaskStatus.RUNNING.code(), SolveTaskStatus.RUNNING.code());
 
         try {
             SolveInput input = assembleInput(req);
@@ -66,24 +112,33 @@ public class PlanSolveServiceImpl implements PlanSolveService {
 
             persistResult(req.getTenantId(), req.getPlanId(), result);
 
-            if ("SOLVED".equals(result.getStatus())) {
+            if (SolveTaskStatus.SOLVED.code().equals(result.getStatus())) {
                 markSolved(req.getTenantId(), req.getPlanId(), result);
+                updateJobStatus(req.getTenantId(), req.getPlanId(), taskId,
+                        SolveTaskStatus.SOLVED.code(), "OK");
             } else {
-                markStatus(req.getTenantId(), req.getPlanId(), "FAILED", result.getMessage());
+                markStatus(req.getTenantId(), req.getPlanId(),
+                        SolveTaskStatus.FAILED.code(), result.getMessage());
+                updateJobStatus(req.getTenantId(), req.getPlanId(), taskId,
+                        SolveTaskStatus.FAILED.code(), result.getMessage());
             }
 
-            log.info("SOLVE_END tenantId={}, planId={}, status={}, cost={}ms, assigned={}, unassigned={}",
-                    req.getTenantId(), req.getPlanId(), result.getStatus(), cost,
+            log.info("SOLVE_END tenantId={}, planId={}, taskId={}, status={}, cost={}ms, assigned={}, unassigned={}",
+                    req.getTenantId(), req.getPlanId(), taskId, result.getStatus(), cost,
                     result.getKpi().getAssignedTaskCount(), result.getKpi().getUnassignedTaskCount());
 
         } catch (Exception e) {
             long cost = System.currentTimeMillis() - start;
-            log.error("SOLVE_FAIL tenantId={}, planId={}, cost={}ms, err={}",
-                    req.getTenantId(), req.getPlanId(), cost, e.getMessage(), e);
-            markStatus(req.getTenantId(), req.getPlanId(), "FAILED", e.getMessage());
+            log.error("SOLVE_FAIL tenantId={}, planId={}, taskId={}, cost={}ms, err={}",
+                    req.getTenantId(), req.getPlanId(), taskId, cost, e.getMessage(), e);
+
+            markStatus(req.getTenantId(), req.getPlanId(),
+                    SolveTaskStatus.FAILED.code(), e.getMessage());
+            updateJobStatus(req.getTenantId(), req.getPlanId(), taskId,
+                    SolveTaskStatus.FAILED.code(), e.getMessage());
         } finally {
             distributedLock.unlock(lockKey);
-            log.info("SOLVE_UNLOCK tenantId={}, planId={}", req.getTenantId(), req.getPlanId());
+            log.info("SOLVE_UNLOCK tenantId={}, planId={}, taskId={}", req.getTenantId(), req.getPlanId(), taskId);
         }
     }
 
@@ -255,7 +310,7 @@ public class PlanSolveServiceImpl implements PlanSolveService {
         if (plan == null)
             return;
 
-        plan.setStatus("SOLVED");
+        plan.setStatus(SolveTaskStatus.SOLVED.code());
         plan.setMessage("OK");
         plan.setAssignedCount(result.getKpi().getAssignedTaskCount());
         plan.setUnassignedCount(result.getKpi().getUnassignedTaskCount());
@@ -275,5 +330,31 @@ public class PlanSolveServiceImpl implements PlanSolveService {
         plan.setStatus(status);
         plan.setMessage(message);
         planMapper.updateById(plan);
+    }
+
+    private void updateJobStatus(Long tenantId, Long planId, String taskId, String status, String message) {
+        LocalDateTime now = LocalDateTime.now();
+        solveJobMapper.update(null,
+                new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<DispatchSolveJobDO>()
+                        .eq(DispatchSolveJobDO::getTenantId, tenantId)
+                        .eq(DispatchSolveJobDO::getPlanId, planId)
+                        .eq(DispatchSolveJobDO::getTaskId, taskId)
+                        .eq(DispatchSolveJobDO::getDeleted, 0)
+                        .set(DispatchSolveJobDO::getStatus, status)
+                        .set(DispatchSolveJobDO::getMessage, message)
+                        .set(DispatchSolveJobDO::getUpdateTime, now));
+    }
+
+    private DispatchSolveJobDO findActiveJob(Long tenantId, Long planId) {
+        return solveJobMapper.selectOne(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<DispatchSolveJobDO>()
+                        .eq(DispatchSolveJobDO::getTenantId, tenantId)
+                        .eq(DispatchSolveJobDO::getPlanId, planId)
+                        .eq(DispatchSolveJobDO::getDeleted, 0)
+                        .in(DispatchSolveJobDO::getStatus,
+                                SolveTaskStatus.ACCEPTED.code(),
+                                SolveTaskStatus.RUNNING.code())
+                        .orderByDesc(DispatchSolveJobDO::getUpdateTime)
+                        .last("limit 1"));
     }
 }

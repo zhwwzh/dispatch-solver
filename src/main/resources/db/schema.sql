@@ -174,5 +174,26 @@ CREATE TABLE dispatch_unassigned (
     KEY idx_tenant_plan_task (tenant_id, plan_id, task_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '未分配任务';
 
+-- =========================================================
+-- 7) 调度求解异步任务表：dispatch_solve_job
+-- =========================================================
+DROP TABLE IF EXISTS dispatch_solve_job;
+
+CREATE TABLE dispatch_solve_job (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    tenant_id BIGINT NOT NULL COMMENT '租户ID',
+    plan_id BIGINT NOT NULL COMMENT '调度方案ID',
+    task_id VARCHAR(64) NOT NULL COMMENT '求解任务ID（对外暴露，用于查询任务状态）',
+    status VARCHAR(32) NOT NULL COMMENT '任务状态：ACCEPTED / RUNNING / SOLVED / FAILED',
+    message VARCHAR(255) DEFAULT NULL COMMENT '状态说明或失败原因',
+    create_time DATETIME NOT NULL COMMENT '任务创建时间',
+    update_time DATETIME NOT NULL COMMENT '任务状态更新时间',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除标识：0-未删除，1-已删除',
+    UNIQUE KEY uk_task_id (task_id),
+    KEY idx_tenant_plan (tenant_id, plan_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '调度求解异步任务表';
+
+CREATE INDEX idx_tenant_plan_status_update ON dispatch_solve_job(tenant_id, plan_id, status, deleted, update_time);
+
 SET
     FOREIGN_KEY_CHECKS = 1;
