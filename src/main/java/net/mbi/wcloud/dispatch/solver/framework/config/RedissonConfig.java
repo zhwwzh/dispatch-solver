@@ -1,12 +1,16 @@
 package net.mbi.wcloud.dispatch.solver.framework.config;
 
+import lombok.extern.slf4j.Slf4j;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
 import org.redisson.config.Config;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+@Slf4j
+@RefreshScope
 @Configuration
 public class RedissonConfig {
 
@@ -29,13 +33,14 @@ public class RedissonConfig {
     public RedissonClient redissonClient() {
         Config config = new Config();
         String address = "redis://" + host + ":" + port;
+        log.info("Initializing RedissonClient, address={}, db={}, lockWatchdogTimeoutMs={}", address, database,
+                lockWatchdogTimeoutMs);
 
         config.useSingleServer()
                 .setAddress(address)
                 .setDatabase(database)
                 .setPassword(password == null || password.isBlank() ? null : password);
 
-        // 关键：覆盖“求解几分钟”的场景
         config.setLockWatchdogTimeout(lockWatchdogTimeoutMs);
 
         return Redisson.create(config);

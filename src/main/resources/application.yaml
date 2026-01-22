@@ -1,68 +1,19 @@
-server:
-  port: 8080
-  servlet:
-    context-path: /
-
 spring:
   application:
     name: dispatch-solver
   profiles:
     active: dev
-  datasource:
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://127.0.0.1:3306/dsc?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-    username: root
-    password: P@ssw0rd
-  jackson:
-    time-zone: Asia/Shanghai
-    date-format: yyyy-MM-dd HH:mm:ss
-  data:
-    redis:
-      host: 127.0.0.1
-      port: 6379
-      database: 0
-      password: ""
-      timeout: 3000ms
-  sql:
-    init:
-      mode: always
-      schema-locations: classpath:db/schema.sql
-      data-locations: classpath:db/data.sql
+  config:
+    import:
+      - optional:nacos:${spring.application.name}.yaml
 
-mybatis-plus:
-  configuration:
-    map-underscore-to-camel-case: true
-    cache-enabled: false
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
-  global-config:
-    banner: false
-    db-config:
-      id-type: AUTO
-      logic-delete-field: deleted
-      logic-delete-value: 1
-      logic-not-delete-value: 0
-
-# =========================================================
-# Solver 线程池（@Async）
-# =========================================================
-dispatch:
-  solver:
-    async:
-      core-pool-size: 4
-      max-pool-size: 16
-      queue-capacity: 200
-
-    # Redisson 看门狗时间（毫秒）
-    # Solver 单次运行可能几分钟，这里给 10 分钟
-    lock-watchdog-timeout-ms: 600000
-
-# =========================================================
-# 日志级别（方便你观察 SOLVE_START / SOLVE_END）
-# =========================================================
-logging:
-  level:
-    root: INFO
-    net.mbi.wcloud.dispatch.solver: DEBUG
-    org.mybatis: DEBUG
-    com.baomidou.mybatisplus: DEBUG
-    org.redisson: INFO
+  cloud:
+    nacos:
+      server-addr: 127.0.0.1:8848
+      username: nacos
+      password: passw0rd
+      config:
+        namespace: dev
+        group: DEFAULT_GROUP
+        file-extension: yaml
+        refresh-enabled: true

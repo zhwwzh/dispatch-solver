@@ -22,8 +22,12 @@ public class RedissonDistributedLock implements DistributedLock {
         String lockKey = LOCK_PREFIX + key;
         RLock lock = redissonClient.getLock(lockKey);
         try {
-            // waitTime=0：不等待；leaseTime=-1：watchdog 自动续期
-            return lock.tryLock(0, -1, TimeUnit.SECONDS);
+            // waitTime=0：不等待（立即返回）
+            // leaseTime:
+            // - ttlSeconds > 0：使用固定 TTL，避免死锁
+            // - ttlSeconds <= 0：使用 watchdog 自动续期（-1）
+            long leaseTime = ttlSeconds > 0 ? ttlSeconds : -1L;
+            return lock.tryLock(0L, leaseTime, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.warn("Lock interrupted: {}", lockKey, e);
