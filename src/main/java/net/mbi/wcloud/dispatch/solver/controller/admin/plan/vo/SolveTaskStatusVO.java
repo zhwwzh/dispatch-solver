@@ -1,9 +1,17 @@
 package net.mbi.wcloud.dispatch.solver.controller.admin.plan.vo;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
+@Schema(name = "SolveTaskStatusVO", description = "求解任务状态信息")
 public class SolveTaskStatusVO {
 
+    @Schema(description = "求解任务ID", example = "task_20260122_0001", requiredMode = Schema.RequiredMode.REQUIRED)
     private String taskId;
+
+    @Schema(description = "任务状态（如 ACCEPTED / RUNNING / SUCCESS / FAILED）", example = "RUNNING")
     private String status;
+
+    @Schema(description = "任务状态说明或失败原因", example = "Solver is running")
     private String message;
 
     public SolveTaskStatusVO() {
